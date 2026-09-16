@@ -4050,7 +4050,11 @@ async function preScreen(symbols, { keep = 150, jumpMin = 0.08, onProgress = nul
   };
 
   const failed = [];
-  await sweep(symbols, SPARK_BATCH, failed);
+  /* A hundred and twenty batches against a relay that is refusing, each one
+     working through every route and waiting out every timeout, is hours of
+     nothing — and from the outside it is indistinguishable from progress.
+     Eight failures in a row with not one name read is enough to know. */
+  await sweep(symbols, SPARK_BATCH, failed, { giveUpAfter: 8 });
   /* Fifty symbols make a long URL, and a relay that truncates or refuses it
      loses all fifty at once — so the batch failing says nothing about the
      names in it. Retrying in tens recovers them. This runs even when the
@@ -10061,7 +10065,15 @@ async function runScanForSymbols({
   title, symbols, count = null, prescreen = true, out = null, keepMin = 20,
   screens = null, regions = ['US'], width = 'balanced',
 } = {}) {
-  const say = html => { if (out) out.innerHTML = html; };
+  /* Starting a scan emits 'session', which repaints the screen and throws
+     away the element this function was handed. Every progress message after
+     that was being written into a detached node — which is why a run that
+     was working hard looked identical to a run that had hung. Resolve it
+     each time instead of holding a reference across a repaint. */
+  const say = html => {
+    const el = typeof out === 'string' ? document.querySelector(out) : out;
+    if (el) el.innerHTML = html;
+  };
   const total = symbols?.length ?? count ?? 0;
 
   scanLog.reset();
@@ -10159,7 +10171,10 @@ async function runScanForSymbols({
         const gapRule = (S.state.rules?.rules ?? []).find(r => r.key === 'epGapSoft')?.value ?? 0.08;
         const pre = await preScreen(list, {
           keep, jumpMin: gapRule,
-          onProgress: (d, t, n) => say(`<span class="spin"></span>Ranking — batch ${d} of ${t}, ${n} names read.`),
+          onProgress: (d, t, n, size) => say(`<span class="spin"></span>Ranking — batch ${d} of ${t}`
+            + `${size && size < 50 ? ` (retrying in ${size}s)`.replace('s)', 's)') : ''}`
+            + `, ${n.toLocaleString()} names read`
+            + `${d > 3 && n === 0 ? ' — nothing is coming back, so this will stop shortly rather than grind' : ''}.`),
         });
         const cached = list.filter(t => barStore.has(t));
         const before = list.length;
@@ -10247,7 +10262,7 @@ function presetPanel(el, nav) {
         symbols,
         count: chosen.count,
         prescreen: el.querySelector('#preset-prescreen')?.checked !== false,
-        out,
+        out: '#preset-out',
       });
     } catch { /* the runner has already written the reason into #preset-out */ }
     el.querySelectorAll('[data-preset]').forEach(x => { x.disabled = false; });
@@ -12899,7 +12914,7 @@ function Platforms(root, nav) {
           prescreen: p.mode === 'all' ? false : prescreen,
           screens: useScreens && p.mode === 'screener' ? (p.screens ?? []) : null,
           regions: p.regions, width: p.width ?? 'balanced',
-          out: root.querySelector('#plat-out'),
+          out: '#plat-out',
         });
         nav('/scan');
       } catch { /* runScanForSymbols has already written the reason */ }
